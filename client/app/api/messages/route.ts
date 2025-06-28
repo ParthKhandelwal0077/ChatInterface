@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
       conversationId, 
       groupId, 
       communityId, 
-      senderId, 
+      senderId, // This is the user ID
       content, 
       messageType = 'text', 
       replyToMessageId,
@@ -122,6 +122,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { success: false, error: 'Sender ID is required' },
         { status: 400 }
+      );
+    }
+
+    // Get the phone number ID for the sender
+    const { data: senderPhone, error: senderError } = await supabase
+      .from('phone_numbers')
+      .select('id')
+      .eq('user_id', senderId)
+      .single();
+
+    if (senderError || !senderPhone) {
+      return NextResponse.json(
+        { success: false, error: 'No phone number found for this user' },
+        { status: 404 }
       );
     }
 
@@ -141,20 +155,6 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-
-     // Verify sender exists
-     const { data: senderPhone, error: senderError } = await supabase
-     .from('phone_numbers')
-     .select('id')
-     .eq('user_id', senderId)
-     .single();
-
-   if (senderError || !senderPhone) {
-     return NextResponse.json(
-       { success: false, error: 'Sender user not found' },
-       { status: 404 }
-     );
-   }
 
     // Validate content or attachment URL is provided
     if (!content && !attachmentUrl) {
@@ -189,16 +189,31 @@ export async function POST(req: NextRequest) {
       conversation_id: conversationId || null,
       group_id: groupId || null,
       community_id: communityId || null,
-      sender_id: senderId,
+      sender_id: senderPhone.id, // Use the phone number ID instead of user ID
       content: content || null,
       message_type: messageType,
       reply_to_message_id: replyToMessageId || null,
       sent_at: new Date().toISOString()
     };
 
-    const { data: newMessage, error: messageError } = await supabase
+    // First insert the message
+    const { data: insertedMessage, error: insertError } = await supabase
       .from('messages')
       .insert([createMessageData])
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Error creating message:', insertError);
+      return NextResponse.json(
+        { success: false, error: 'Error creating message' },
+        { status: 500 }
+      );
+    }
+
+    // Then fetch the message with all its relations
+    const { data: newMessage, error: messageError } = await supabase
+      .from('messages')
       .select(`
         *,
         sender_phone:phone_numbers!messages_sender_id_fkey(
@@ -216,12 +231,13 @@ export async function POST(req: NextRequest) {
           )
         )
       `)
+      .eq('id', insertedMessage.id)
       .single();
 
     if (messageError) {
-      console.error('Error creating message:', messageError);
+      console.error('Error fetching created message:', messageError);
       return NextResponse.json(
-        { success: false, error: 'Error creating message' },
+        { success: false, error: 'Error fetching created message' },
         { status: 500 }
       );
     }
